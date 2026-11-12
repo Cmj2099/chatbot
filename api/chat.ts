@@ -73,8 +73,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       apiKey,
     });
 
-    // OpenAI Responses API 호출 (gpt-6-luna 모델, reasoning.effort: none)
-    const response = await openai.responses.create({
+    // OpenAI Responses API 스트리밍 호출 (gpt-6-luna 모델, reasoning.effort: none)
+    const stream = await openai.responses.create({
       model: 'gpt-6-luna',
       reasoning: {
         effort: 'none',
@@ -84,42 +84,37 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         role: m.role,
         content: m.content,
       })),
+      stream: true,
     });
 
-    // 텍스트 추출: SDK 편리 속성 output_text 또는 output 배열 구조 탐색
-    let replyText = response.output_text?.trim();
+    // 스트리밍 응답 헤더 설정
+    res.statusCode = 200;
+    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+    res.setHeader('Cache-Control', 'no-cache, no-transform');
+    res.setHeader('X-Accel-Buffering', 'no');
 
-    if (!replyText && Array.isArray(response.output)) {
-      replyText = response.output
-        .map((item: any) => {
-          if (item?.type === 'message' && Array.isArray(item.content)) {
-            return item.content
-              .filter((c: any) => c?.type === 'output_text' || typeof c?.text === 'string')
-              .map((c: any) => c.text || '')
-              .join('');
-          }
-          return '';
-        })
-        .join('\n')
-        .trim();
+    for await (const event of stream) {
+      if (
+        (event.type === 'response.output_text.delta' || event.type === 'response.refusal.delta') &&
+        event.delta
+      ) {
+        res.write(event.delta);
+      }
     }
 
-    if (!replyText) {
-      replyText = '답변을 생성하지 못했습니다. 다시 시도해 주세요.';
-    }
-
-    return res.status(200).json({
-      message: {
-        role: 'assistant',
-        content: replyText,
-      },
-    });
+    return res.end();
   } catch (error: any) {
     console.error('[OpenAI Responses API Error]:', error);
     const message = error?.message || 'OpenAI API 호출 중 오류가 발생했습니다.';
-    return res.status(error?.status || 500).json({
-      error: message,
-    });
+
+    if (!res.headersSent) {
+      return res.status(error?.status || 500).json({
+        error: message,
+      });
+    }
+
+    res.write(`\n\n[오류 발생]: ${message}`);
+    return res.end();
   }
 }
 

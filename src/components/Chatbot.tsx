@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { sendChatMessage, type ChatMessage } from '../api/chat';
+import { sendChatMessageStream, type ChatMessage } from '../api/chat';
 import './Chatbot.css';
 
 interface DisplayMessage extends ChatMessage {
@@ -11,21 +11,24 @@ const INITIAL_MESSAGE: DisplayMessage = {
   id: 'init-msg',
   role: 'assistant',
   content:
-    '안녕하세요! 📚 영어 단어 퀴즈 챗봇입니다.\n\n어떤 주제나 난이도로 영어 단어를 공부해 보고 싶으신가요?\n아래 추천 버튼을 누르시거나, 원하시는 주제(예: 해외여행, 비즈니스 미팅, 카페 주문)와 난이도(초급/중급/고급)를 편하게 말씀해 주세요!',
+    '안녕하세요! 📚 영어 단어 퀴즈 챗봇입니다.\n\n어떤 주제나 난이도로 영어 단어를 공부해 보고 싶으신가요?\n아래 추천 버튼에서 주제와 난이도를 순서대로 선택하시거나, 원하시는 조건을 입력창에 직접 말씀해 주세요!',
 };
 
-const SUGGESTED_TOPICS = [
-  '✈️ 해외여행 필수 회화 (초급)',
-  '💼 비즈니스 이메일 & 미팅 (중급)',
-  '☕ 카페 & 식당 주문하기 (초급)',
-  '🎯 토익/수능 빈출 어휘 (고급)',
-  '🍿 미드 & 영화 자주 나오는 표현 (중급)',
+const TOPICS = [
+  '일상 회화',
+  '비즈니스 영어',
+  '공항/여행 영어',
+  '토익/수능 필수 단어',
 ];
+
+const LEVELS = ['초급', '중급', '고급'];
 
 export const Chatbot: React.FC = () => {
   const [messages, setMessages] = useState<DisplayMessage[]>([INITIAL_MESSAGE]);
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  const [selectedTopic, setSelectedTopic] = useState<string | null>(null);
+
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
@@ -39,7 +42,26 @@ export const Chatbot: React.FC = () => {
     if (window.confirm('대화를 처음부터 다시 시작하시겠습니까?')) {
       setMessages([INITIAL_MESSAGE]);
       setInput('');
+      setSelectedTopic(null);
     }
+  };
+
+  // 1단계: 주제 선택 핸들러
+  const handleSelectTopic = (topic: string) => {
+    setSelectedTopic(topic);
+  };
+
+  // 2단계: 난이도 선택 및 메시지 전송 핸들러
+  const handleSelectLevel = (level: string) => {
+    if (!selectedTopic) return;
+    const promptMessage = `주제: ${selectedTopic}\n난이도: ${level}\n위 조건에 맞는 영어 단어 퀴즈를 시작해줘.`;
+    setSelectedTopic(null); // 전송 후 주제 선택 초기화
+    handleSend(promptMessage);
+  };
+
+  // 주제 선택 취소 (다시 주제 선택으로 돌아가기)
+  const handleCancelTopic = () => {
+    setSelectedTopic(null);
   };
 
   // 메시지 전송 처리
@@ -68,15 +90,28 @@ export const Chatbot: React.FC = () => {
           content: msgContent,
         }));
 
-      const reply = await sendChatMessage(payload);
+      const assistantMsgId = `assistant-${Date.now()}`;
+      let hasReceivedChunk = false;
 
-      const assistantMessage: DisplayMessage = {
-        id: `assistant-${Date.now()}`,
-        role: 'assistant',
-        content: reply,
-      };
-
-      setMessages((prev) => [...prev, assistantMessage]);
+      await sendChatMessageStream(payload, (accumulatedText) => {
+        if (!hasReceivedChunk) {
+          hasReceivedChunk = true;
+          setMessages((prev) => [
+            ...prev,
+            {
+              id: assistantMsgId,
+              role: 'assistant',
+              content: accumulatedText,
+            },
+          ]);
+        } else {
+          setMessages((prev) =>
+            prev.map((msg) =>
+              msg.id === assistantMsgId ? { ...msg, content: accumulatedText } : msg
+            )
+          );
+        }
+      });
     } catch (error: any) {
       const errorMessage: DisplayMessage = {
         id: `error-${Date.now()}`,
@@ -142,7 +177,7 @@ export const Chatbot: React.FC = () => {
           </div>
         ))}
 
-        {isLoading && (
+        {isLoading && messages[messages.length - 1]?.role === 'user' && (
           <div className="message-row assistant">
             <div className="message-sender-avatar" aria-hidden="true">
               🤖
@@ -158,23 +193,53 @@ export const Chatbot: React.FC = () => {
         <div ref={messagesEndRef} />
       </main>
 
-      {/* 추천 주제 칩 */}
+      {/* 추천 버튼 (1단계: 주제 선택 / 2단계: 난이도 선택) */}
       <div className="quick-topics">
-        <span className="quick-topics-label">추천 주제:</span>
-        {SUGGESTED_TOPICS.map((topic) => (
-          <button
-            key={topic}
-            type="button"
-            className="topic-chip"
-            disabled={isLoading}
-            onClick={() => handleSend(topic)}
-          >
-            {topic}
-          </button>
-        ))}
+        {!selectedTopic ? (
+          <>
+            <span className="quick-topics-label">1단계 주제 선택:</span>
+            {TOPICS.map((topic) => (
+              <button
+                key={topic}
+                type="button"
+                className="topic-chip"
+                disabled={isLoading}
+                onClick={() => handleSelectTopic(topic)}
+              >
+                {topic}
+              </button>
+            ))}
+          </>
+        ) : (
+          <>
+            <span className="quick-topics-label">
+              2단계 난이도 선택: <strong className="selected-topic-name">[{selectedTopic}]</strong>
+            </span>
+            <button
+              type="button"
+              className="topic-chip back-chip"
+              disabled={isLoading}
+              onClick={handleCancelTopic}
+              title="다른 주제 다시 선택하기"
+            >
+              ← 주제 변경
+            </button>
+            {LEVELS.map((level) => (
+              <button
+                key={level}
+                type="button"
+                className="topic-chip level-chip"
+                disabled={isLoading}
+                onClick={() => handleSelectLevel(level)}
+              >
+                {level}
+              </button>
+            ))}
+          </>
+        )}
       </div>
 
-      {/* 입력 영역 */}
+      {/* 입력 영역 (직접 입력 기능 유지) */}
       <footer className="chatbot-input-area">
         <form
           className="input-form"
@@ -190,7 +255,7 @@ export const Chatbot: React.FC = () => {
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder="주제(예: 여행, 비즈니스)나 난이도, 또는 퀴즈의 정답을 입력하세요..."
+            placeholder="주제(예: 여행, 비즈니스)나 난이도, 또는 퀴즈의 정답을 직접 입력하세요..."
             disabled={isLoading}
           />
           <button
@@ -208,4 +273,3 @@ export const Chatbot: React.FC = () => {
 };
 
 export default Chatbot;
-
